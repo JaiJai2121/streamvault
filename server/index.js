@@ -2,6 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
 import { CONFIG } from './config.js';
 import {
   getActiveRecordings,
@@ -47,7 +48,36 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '16kb' }));
 
-// Public deployment: no site-wide login, access key, or authentication gate.
+// Access gate: keep the key in the local Windows launcher, never in this public repo.
+const accessKey = process.env.ACCESS_KEY;
+if (!accessKey) {
+  throw new Error('ACCESS_KEY is required. Start StreamVault using your private Windows launcher.');
+}
+
+function safeEqual(left, right) {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+app.use((req, res, next) => {
+  const header = req.headers.authorization || '';
+  if (header.startsWith('Basic ')) {
+    let credentials = '';
+    try {
+      credentials = Buffer.from(header.slice(6), 'base64').toString('utf8');
+    } catch {
+      credentials = '';
+    }
+    const separator = credentials.indexOf(':');
+    const password = separator >= 0 ? credentials.slice(separator + 1) : '';
+    if (separator >= 0 && safeEqual(password, accessKey)) return next();
+  }
+
+  res.setHeader('WWW-Authenticate', 'Basic realm="StreamVault", charset="UTF-8"');
+  res.status(401).type('text').send('StreamVault is locked. Enter your access key in the browser sign-in box.');
+});
+
 
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
